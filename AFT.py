@@ -78,13 +78,13 @@ waiting_target_bot = set()
 waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 2. سحب التوكن تلقائياً عبر Telethon
+# 2. سحب التوكن عبر Telethon مع معالجة الأخطاء
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
     def run_coro(coro):
         future = asyncio.run_coroutine_threadsafe(coro, telethon_loop)
-        return future.result(timeout=40.0)
+        return future.result(timeout=30.0)
 
     @classmethod
     def fetch_token(cls, session_str, target_bot=DEFAULT_TARGET_BOT, app_url=DEFAULT_APP_URL):
@@ -96,9 +96,11 @@ class TelethonManager:
                 await client.connect()
                 if not await client.is_user_authorized():
                     await client.disconnect()
-                    return None, "الجلسة النصية منتهية الصلاحية"
+                    return None, "الجلسة النصية غير مصرح بها أو تم إنهاؤها."
 
                 bot_entity = await client.get_input_entity(target_clean)
+                
+                # إرسال طلب فتح الويب آب
                 web_view = await client(RequestWebViewRequest(
                     peer=bot_entity,
                     bot=bot_entity,
@@ -111,18 +113,21 @@ class TelethonManager:
                 if "#tgWebAppData=" in raw_url:
                     raw_init = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
                     return urllib.parse.unquote(raw_init), "تم سحب التوكن بنجاح"
-                return None, "الرابط لا يحتوي على tgWebAppData"
+                return None, "لم يتم العثور على tgWebAppData بالرابط"
             except Exception as e:
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
-                return None, f"خطأ سحب التوكن: {str(e)}"
+                return None, f"خطأ تيليجرام: {str(e)}"
 
-        return cls.run_coro(_fetch())
+        try:
+            return cls.run_coro(_fetch())
+        except Exception as e:
+            return None, f"توقف السحب (Timeout): {str(e)}"
 
 # ----------------------------------------------------
-# 3. محرك التعدين والمهام (AccountWorker)
+# 3. محرك التعدين
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id):
@@ -142,7 +147,7 @@ class AccountWorker:
         self.total_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "جاري الاتصال وسحب التوكن تلقائياً..."
+        self.last_status = "بانتظار سحب التوكن..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -177,14 +182,15 @@ class AccountWorker:
             self.update_headers(token)
             self.last_token_time = time.time()
             self.last_status = f"🔄 متصل بنجاح مع @{self.target_bot}"
-            return True
+            return True, msg
         else:
             self.last_status = f"⚠️ {msg}"
-            return False
+            return False, msg
 
     def refresh_token_if_needed(self):
         if not self.init_data or (time.time() - self.last_token_time > 7200):
-            return self.auto_pull_token()
+            ok, _ = self.auto_pull_token()
+            return ok
         return True
 
     def send_req(self, action: str, extra: dict = None):
@@ -375,7 +381,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام ومعالجة الأزرار
+# 4. أوامر التيليجرام
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -389,6 +395,14 @@ def cmd_start(message):
     sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
     worker.message_id = sent.message_id
     worker.start(sent.message_id)
+
+def async_pull_target_bot(cid, w, target_username):
+    success, msg = w.auto_pull_token()
+    if success:
+        bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين!</b>")
+    else:
+        bot.send_message(cid, f"❌ <b>فشل السحب:</b>\n<code>{msg}</code>\n\n💡 <i>يمكنك استخدام زر '🔑 إدخال توكن يدوي' كبديل مباشر.</i>")
+    w.update_ui()
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_click(call):
@@ -409,8 +423,8 @@ def on_click(call):
         w.claim_mining_reward()
         bot.answer_callback_query(call.id, "تم الجمع ✅")
     elif call.data == "pull_now":
-        bot.answer_callback_query(call.id, "جاري تحديث التوكن...")
-        w.auto_pull_token()
+        bot.answer_callback_query(call.id, "جاري التحديث...")
+        threading.Thread(target=async_pull_target_bot, args=(cid, w, w.target_bot), daemon=True).start()
     elif call.data == "ask_bot_user":
         waiting_target_bot.add(cid)
         bot.send_message(cid, "🎯 <b>أرسل الآن يوزرنيم البوت الذي تريد سحب التوكن منه:</b>\n(مثال: <code>@ATF_AIRDROP_bot</code>)")
@@ -435,11 +449,7 @@ def handle_all_messages(message):
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
         bot.send_message(cid, f"⏳ جاري محاولة سحب التوكن من <b>@{w.target_bot}</b>...")
-        if w.auto_pull_token():
-            bot.send_message(cid, f"✅ تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين!")
-        else:
-            bot.send_message(cid, f"⚠️ لم يتم السحب: {w.last_status}")
-        w.update_ui()
+        threading.Thread(target=async_pull_target_bot, args=(cid, w, w.target_bot), daemon=True).start()
         return
 
     if cid in waiting_manual_token:
@@ -456,7 +466,7 @@ def handle_all_messages(message):
         w.last_status = "⚡ تم تعيين التوكن وبدأ التعدين"
         w.last_token_time = time.time()
         w.update_ui()
-        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح!")
+        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح وبدأ التعدين!")
         return
 
 if __name__ == "__main__":
