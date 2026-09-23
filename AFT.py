@@ -33,13 +33,12 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام والبيانات الخاصة بك
+# 1. إعدادات التيليجرام والبيانات
 # ----------------------------------------------------
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAF9AoozwvbipoKbIcjq2EprAT0CCNfKHH8")
 
-# كود جلستك النصية المستخرج للاتصال التلقائي
 DEFAULT_STRING_SESSION = (
     "1BJWap1sBuz1G6LoOdUGV3VkFr5nlFxy13R3W1CQh3ELRdIGfzw6nxQ404KeOlJ7r6yhM2OnUwXnSTR7swVF3YSvKipeRuz4382qlLaqlY0"
     "NUb3sCE_Peiso5RfJpe9gqmH6mEYTKBoIB_GUj-JIyvOt6ul9Lb96PrAn1oZ0FVCa9XwhCF3nFT8JNDmwbLWPp6KPOU8uhIGb7pU4o9llarR-"
@@ -75,6 +74,8 @@ def start_telethon_loop(loop):
 threading.Thread(target=start_telethon_loop, args=(telethon_loop,), daemon=True).start()
 
 active_workers = {}
+waiting_target_bot = set()
+waiting_manual_token = set()
 
 # ----------------------------------------------------
 # 2. سحب التوكن تلقائياً عبر Telethon
@@ -304,9 +305,13 @@ class AccountWorker:
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
         btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
+        btn_bot = types.InlineKeyboardButton("🎯 تغيير يوزر البوت", callback_data="ask_bot_user")
         btn_pull = types.InlineKeyboardButton("🔄 تحديث التوكن الآن", callback_data="pull_now")
+        btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
+        
         markup.add(btn_toggle, btn_claim)
-        markup.add(btn_pull)
+        markup.add(btn_bot, btn_pull)
+        markup.add(btn_manual)
         return markup
 
     def update_ui(self):
@@ -370,7 +375,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام
+# 4. أوامر التيليجرام ومعالجة الأزرار
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -406,8 +411,53 @@ def on_click(call):
     elif call.data == "pull_now":
         bot.answer_callback_query(call.id, "جاري تحديث التوكن...")
         w.auto_pull_token()
+    elif call.data == "ask_bot_user":
+        waiting_target_bot.add(cid)
+        bot.send_message(cid, "🎯 <b>أرسل الآن يوزرنيم البوت الذي تريد سحب التوكن منه:</b>\n(مثال: <code>@ATF_AIRDROP_bot</code>)")
+        bot.answer_callback_query(call.id, "بانتظار اليوزرنيم...")
+    elif call.data == "manual_token":
+        waiting_manual_token.add(cid)
+        bot.send_message(cid, "🔑 <b>أرسل سطر الـ initData أو الرابط كاملاً هنا:</b>")
+        bot.answer_callback_query(call.id, "بانتظار التوكن...")
 
     w.update_ui()
+
+@bot.message_handler(func=lambda msg: True)
+def handle_all_messages(message):
+    cid = message.chat.id
+    text = message.text.strip()
+    w = active_workers.get(cid)
+    if not w:
+        w = AccountWorker(chat_id=cid)
+        active_workers[cid] = w
+
+    if cid in waiting_target_bot:
+        waiting_target_bot.remove(cid)
+        w.target_bot = text.replace("@", "").strip()
+        bot.send_message(cid, f"⏳ جاري محاولة سحب التوكن من <b>@{w.target_bot}</b>...")
+        if w.auto_pull_token():
+            bot.send_message(cid, f"✅ تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين!")
+        else:
+            bot.send_message(cid, f"⚠️ لم يتم السحب: {w.last_status}")
+        w.update_ui()
+        return
+
+    if cid in waiting_manual_token:
+        waiting_manual_token.remove(cid)
+        raw_text = text
+        if "#tgWebAppData=" in raw_text:
+            raw_text = urllib.parse.unquote(raw_text.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0])
+
+        if "query_id=" not in raw_text and "user=" not in raw_text:
+            bot.send_message(cid, "❌ سطر غير صالح. أرسل الرابط كاملاً أو التوكن الصحيح.")
+            return
+
+        w.update_headers(raw_text)
+        w.last_status = "⚡ تم تعيين التوكن وبدأ التعدين"
+        w.last_token_time = time.time()
+        w.update_ui()
+        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح!")
+        return
 
 if __name__ == "__main__":
     try:
