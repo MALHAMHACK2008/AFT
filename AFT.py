@@ -37,7 +37,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ----------------------------------------------------
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAF9AoozwvbipoKbIcjq2EprAT0CCNfKHH8")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAEfz_afsdXwpoiwHcoleaDExt_DT3arO5U")
 
 DEFAULT_STRING_SESSION = (
     "1BJWap1sBuz1G6LoOdUGV3VkFr5nlFxy13R3W1CQh3ELRdIGfzw6nxQ404KeOlJ7r6yhM2OnUwXnSTR7swVF3YSvKipeRuz4382qlLaqlY0"
