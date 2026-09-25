@@ -100,7 +100,6 @@ class TelethonManager:
 
                 bot_entity = await client.get_input_entity(target_clean)
                 
-                # إرسال طلب فتح الويب آب
                 web_view = await client(RequestWebViewRequest(
                     peer=bot_entity,
                     bot=bot_entity,
@@ -143,8 +142,10 @@ class AccountWorker:
 
         self.pool_balance = 0.0
         self.pending_reward = 0.0
+        self.team_wallet_balance = 0.0  # رصيد نقاط الأصدقاء المعلق
         self.miner_level = 0
         self.total_claims = 0
+        self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
         self.last_status = "بانتظار سحب التوكن..."
@@ -226,6 +227,23 @@ class AccountWorker:
             return True
         return False
 
+    def claim_team_wallet(self):
+        """جمع نقاط محفظة الأصدقاء / الفريق"""
+        res = self.send_req("claim_team_wallet")
+        if res and res.get("status") == "success":
+            self.total_team_claims += 1
+            claimed = float(res.get("claimed_amount", res.get("reward", self.team_wallet_balance)))
+            self.team_wallet_balance = 0.0
+            if "new_pool_balance" in res:
+                self.pool_balance = float(res["new_pool_balance"])
+            elif "balance" in res:
+                self.pool_balance = float(res["balance"])
+            else:
+                self.pool_balance += claimed
+            self.last_status = f"👥 تم جمع نقاط الأصدقاء (+{claimed:.4f})"
+            return True
+        return False
+
     def boost(self):
         old_pending = self.pending_reward
         res = self.send_req("activate_boost", {
@@ -300,24 +318,28 @@ class AccountWorker:
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"<b>💰 تعدين العملات (هدف 1 ATF):</b>\n"
             f"• <b>التقدم:</b> <code>[{bar}] {progress}%</code>\n"
-            f"• <b>المعلق:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n"
+            f"• <b>المعلق:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n\n"
+            f"<b>👥 محفظة الأصدقاء (تلقائي عند ≥ 0.9):</b>\n"
+            f"• <b>الرصيد المعلق:</b> <code>{self.team_wallet_balance:.4f} ATF</code>\n"
+            f"• <b>مرات جمع الفريق:</b> <code>{self.total_team_claims}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>المهام المنجزة:</b> <code>{self.completed_tasks}</code>\n"
-            f"• <b>مرات الجمع:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
+            f"• <b>مرات جمع التعدين:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
             f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
         )
 
     def get_markup(self):
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
-        btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
+        btn_claim = types.InlineKeyboardButton("💰 جمع التعدين", callback_data="claim")
+        btn_claim_team = types.InlineKeyboardButton("👥 جمع الأصدقاء", callback_data="claim_team")
         btn_bot = types.InlineKeyboardButton("🎯 تغيير يوزر البوت", callback_data="ask_bot_user")
-        btn_pull = types.InlineKeyboardButton("🔄 تحديث التوكن الآن", callback_data="pull_now")
+        btn_pull = types.InlineKeyboardButton("🔄 تحديث التوكن", callback_data="pull_now")
         btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         
         markup.add(btn_toggle, btn_claim)
-        markup.add(btn_bot, btn_pull)
-        markup.add(btn_manual)
+        markup.add(btn_claim_team, btn_bot)
+        markup.add(btn_pull, btn_manual)
         return markup
 
     def update_ui(self):
@@ -346,14 +368,25 @@ class AccountWorker:
                     u = login.get("user", {})
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
+                    
+                    # استخراج رصيد محفظة الأصدقاء من بيانات الحساب
+                    team_bal = u.get("team_wallet", u.get("referral_balance", u.get("team_balance", None)))
+                    if team_bal is not None:
+                        self.team_wallet_balance = float(team_bal)
+
                     server_cooldowns = login.get("task_cooldowns", {})
                     if server_cooldowns:
                         self.task_cooldowns.update(server_cooldowns)
 
                 cycle_sec = self.boost()
 
+                # فحص جمع التعدين الأساسي
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
+
+                # فحص محفظة الأصدقاء والجمع عند الوصول لـ 0.9 أو أكثر
+                if self.team_wallet_balance >= 0.9:
+                    self.claim_team_wallet()
 
                 if cycle % 6 == 0:
                     self.process_tasks()
@@ -421,7 +454,10 @@ def on_click(call):
         bot.answer_callback_query(call.id, "تم الإيقاف 🛑")
     elif call.data == "claim":
         w.claim_mining_reward()
-        bot.answer_callback_query(call.id, "تم الجمع ✅")
+        bot.answer_callback_query(call.id, "تم جمع التعدين ✅")
+    elif call.data == "claim_team":
+        w.claim_team_wallet()
+        bot.answer_callback_query(call.id, "تم طلب جمع رصيد الأصدقاء 👥")
     elif call.data == "pull_now":
         bot.answer_callback_query(call.id, "جاري التحديث...")
         threading.Thread(target=async_pull_target_bot, args=(cid, w, w.target_bot), daemon=True).start()
