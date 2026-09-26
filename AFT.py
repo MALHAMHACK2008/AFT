@@ -24,7 +24,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Engine Auto-Pull is Running 24/7!"
+    return "ATF Engine Multi-Session Auto-Pull is Running 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -39,7 +39,7 @@ API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAEfz_afsdXwpoiwHcoleaDExt_DT3arO5U")
 
-# كود الجلسة الجديد الخاص بك
+# كود الجلسة الافتراضي لحسابك
 DEFAULT_STRING_SESSION = (
     "1BJWap1sBu3EjezzkBKKUZ8gWHAVIGQVRUIfM60v5KOZWajnGi5ppal6MwrZZjXghbg8HW1gVKCAB-gC_1p-Hx8jv6eCxhqlS1gXiGGu6efOkr_"
     "pA2mlfth1GHD-3vOvyC6LjZFwl-io9T7GNlSw98TTMWIpzHGDry8cklbBvP4zRBvIVMnBvwyulEDlfLE3ZPozRg83EouMTqFHlA5ksHUEd1mp_"
@@ -77,6 +77,7 @@ threading.Thread(target=start_telethon_loop, args=(telethon_loop,), daemon=True)
 active_workers = {}
 waiting_target_bot = set()
 waiting_manual_token = set()
+waiting_custom_session = set()
 
 # ----------------------------------------------------
 # 2. سحب التوكن عبر Telethon
@@ -127,12 +128,13 @@ class TelethonManager:
             return None, f"توقف السحب (Timeout): {str(e)}"
 
 # ----------------------------------------------------
-# 3. محرك التعدين
+# 3. محرك التعدين لكل مستخدم
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id):
         self.chat_id = chat_id
         self.string_session = DEFAULT_STRING_SESSION
+        self.has_custom_session = False
         self.init_data = None
         self.tg_id = str(chat_id)
         self.device_id = f"dev-{uuid.uuid4()}"
@@ -190,7 +192,6 @@ class AccountWorker:
             return False, msg
 
     def refresh_token_if_needed(self):
-        # سحب وتجديد التوكن تلقائياً كل ساعة (3600 ثانية)
         if not self.init_data or (time.time() - self.last_token_time > 3600):
             ok, _ = self.auto_pull_token()
             return ok
@@ -305,6 +306,7 @@ class AccountWorker:
 
     def get_text(self):
         state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
+        session_state = "جلسة مخصصة ✅" if self.has_custom_session else "الجلسة الأساسية ✅"
         progress = min(100, int((self.pending_reward / 1.0) * 100))
         bars = int(10 * (progress / 100))
         bar = "█" * bars + "░" * (10 - bars)
@@ -312,7 +314,7 @@ class AccountWorker:
         return (
             f"<b>🤖 لوحة تحكم مائنر ATF التلقائية</b>\n\n"
             f"• <b>الحالة:</b> {state}\n"
-            f"• <b>اتصال الجلسة:</b> <code>نشط وتلقائي كل ساعة ✅</code>\n"
+            f"• <b>اتصال الجلسة:</b> <code>{session_state}</code>\n"
             f"• <b>البوت المستهدف:</b> <code>@{self.target_bot}</code>\n"
             f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
             f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
@@ -333,14 +335,15 @@ class AccountWorker:
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
         btn_claim = types.InlineKeyboardButton("💰 جمع التعدين", callback_data="claim")
-        btn_claim_team = types.InlineKeyboardButton("👥 جمع الأصدقاء", callback_data="claim_team")
+        btn_session = types.InlineKeyboardButton("📱 ربط جلستي النصية", callback_data="ask_session")
         btn_bot = types.InlineKeyboardButton("🎯 تغيير يوزر البوت", callback_data="ask_bot_user")
         btn_pull = types.InlineKeyboardButton("🔄 تحديث التوكن", callback_data="pull_now")
         btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         
         markup.add(btn_toggle, btn_claim)
-        markup.add(btn_claim_team, btn_bot)
-        markup.add(btn_pull, btn_manual)
+        markup.add(btn_session)
+        markup.add(btn_bot, btn_pull)
+        markup.add(btn_manual)
         return markup
 
     def update_ui(self):
@@ -412,7 +415,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام
+# 4. أوامر التيليجرام ومعالجة الأحداث
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -427,7 +430,7 @@ def cmd_start(message):
     worker.message_id = sent.message_id
     worker.start(sent.message_id)
 
-def async_pull_target_bot(cid, w, target_username):
+def async_pull_target_bot(cid, w):
     success, msg = w.auto_pull_token()
     if success:
         bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين!</b>")
@@ -453,12 +456,13 @@ def on_click(call):
     elif call.data == "claim":
         w.claim_mining_reward()
         bot.answer_callback_query(call.id, "تم جمع التعدين ✅")
-    elif call.data == "claim_team":
-        w.claim_team_wallet()
-        bot.answer_callback_query(call.id, "تم طلب جمع رصيد الأصدقاء 👥")
+    elif call.data == "ask_session":
+        waiting_custom_session.add(cid)
+        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>\n(الذي قمت باستخراجه من Pydroid 3)")
+        bot.answer_callback_query(call.id, "بانتظار كود الجلسة...")
     elif call.data == "pull_now":
         bot.answer_callback_query(call.id, "جاري التحديث...")
-        threading.Thread(target=async_pull_target_bot, args=(cid, w, w.target_bot), daemon=True).start()
+        threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
     elif call.data == "ask_bot_user":
         waiting_target_bot.add(cid)
         bot.send_message(cid, "🎯 <b>أرسل الآن يوزرنيم البوت الذي تريد سحب التوكن منه:</b>\n(مثال: <code>@ATF_AIRDROP_bot</code>)")
@@ -479,11 +483,20 @@ def handle_all_messages(message):
         w = AccountWorker(chat_id=cid)
         active_workers[cid] = w
 
+    if cid in waiting_custom_session:
+        waiting_custom_session.remove(cid)
+        clean_session = "".join(text.split())
+        w.string_session = clean_session
+        w.has_custom_session = True
+        bot.send_message(cid, "⏳ <b>تم استلام الجلسة، جاري الاتصال وسحب التوكن من البوت...</b>")
+        threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
+        return
+
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
         bot.send_message(cid, f"⏳ جاري محاولة سحب التوكن من <b>@{w.target_bot}</b>...")
-        threading.Thread(target=async_pull_target_bot, args=(cid, w, w.target_bot), daemon=True).start()
+        threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
         return
 
     if cid in waiting_manual_token:
