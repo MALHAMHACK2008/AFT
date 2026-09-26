@@ -24,7 +24,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Engine Multi-Session Auto-Pull is Running 24/7!"
+    return "ATF Engine Multi-User Isolated Running 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -33,19 +33,11 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام والبيانات
+# 1. إعدادات التيليجرام العامة
 # ----------------------------------------------------
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAEfz_afsdXwpoiwHcoleaDExt_DT3arO5U")
-
-# كود الجلسة الافتراضي لحسابك
-DEFAULT_STRING_SESSION = (
-    "1BJWap1sBu3EjezzkBKKUZ8gWHAVIGQVRUIfM60v5KOZWajnGi5ppal6MwrZZjXghbg8HW1gVKCAB-gC_1p-Hx8jv6eCxhqlS1gXiGGu6efOkr_"
-    "pA2mlfth1GHD-3vOvyC6LjZFwl-io9T7GNlSw98TTMWIpzHGDry8cklbBvP4zRBvIVMnBvwyulEDlfLE3ZPozRg83EouMTqFHlA5ksHUEd1mp_"
-    "R2EPC_MWHpZCI3dAqPUgAWY_28la3b65TW0bgDyippSoBaL2tYBZ05SSKvIMICkoTffIAy68MaoSIRYjzbVj4yLXjbkzjfuzncAjW6FU6g6Qzo"
-    "KSDetowlFRqKNvPs3ofzg="
-)
 
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 DEFAULT_APP_URL = "https://atfminers.asloni.online/miner/index.html"
@@ -74,22 +66,26 @@ def start_telethon_loop(loop):
 
 threading.Thread(target=start_telethon_loop, args=(telethon_loop,), daemon=True).start()
 
+# تخزين كل مستخدم بشكل منفصل تماماً
 active_workers = {}
 waiting_target_bot = set()
 waiting_manual_token = set()
 waiting_custom_session = set()
 
 # ----------------------------------------------------
-# 2. سحب التوكن عبر Telethon
+# 2. سحب التوكن عبر Telethon لكل جلسة مستقلة
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
     def run_coro(coro):
         future = asyncio.run_coroutine_threadsafe(coro, telethon_loop)
-        return future.result(timeout=30.0)
+        return future.result(timeout=35.0)
 
     @classmethod
     def fetch_token(cls, session_str, target_bot=DEFAULT_TARGET_BOT, app_url=DEFAULT_APP_URL):
+        if not session_str:
+            return None, "لا توجد جلسة مضافة لهذا الحساب."
+
         target_clean = target_bot.replace("@", "").strip()
 
         async def _fetch():
@@ -98,7 +94,7 @@ class TelethonManager:
                 await client.connect()
                 if not await client.is_user_authorized():
                     await client.disconnect()
-                    return None, "الجلسة النصية غير مصرح بها أو تم إنهاؤها."
+                    return None, "الجلسة غير صالحة أو تم تسجيل الخروج منها."
 
                 bot_entity = await client.get_input_entity(target_clean)
                 
@@ -114,7 +110,7 @@ class TelethonManager:
                 if "#tgWebAppData=" in raw_url:
                     raw_init = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
                     return urllib.parse.unquote(raw_init), "تم سحب التوكن بنجاح"
-                return None, "لم يتم العثور على tgWebAppData بالرابط"
+                return None, "لم يتم العثور على بيانات tgWebAppData."
             except Exception as e:
                 try:
                     await client.disconnect()
@@ -128,13 +124,12 @@ class TelethonManager:
             return None, f"توقف السحب (Timeout): {str(e)}"
 
 # ----------------------------------------------------
-# 3. محرك التعدين لكل مستخدم
+# 3. عامل التعدين المستقل لكل مستخدم
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id):
         self.chat_id = chat_id
-        self.string_session = DEFAULT_STRING_SESSION
-        self.has_custom_session = False
+        self.string_session = None  # فارغ تماماً - كل شخص يضع جلسته بنفسه
         self.init_data = None
         self.tg_id = str(chat_id)
         self.device_id = f"dev-{uuid.uuid4()}"
@@ -151,7 +146,7 @@ class AccountWorker:
         self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "بانتظار سحب التوكن..."
+        self.last_status = "يرجى ربط جلستك أو إدخال التوكن للبدء..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -181,6 +176,10 @@ class AccountWorker:
         })
 
     def auto_pull_token(self):
+        if not self.string_session:
+            self.last_status = "⚠️ لم تقم بربط جلستك بعد. اضغط على زر '📱 ربط جلستي النصية'."
+            return False, self.last_status
+
         token, msg = TelethonManager.fetch_token(self.string_session, self.target_bot)
         if token:
             self.update_headers(token)
@@ -192,12 +191,20 @@ class AccountWorker:
             return False, msg
 
     def refresh_token_if_needed(self):
-        if not self.init_data or (time.time() - self.last_token_time > 3600):
+        if not self.init_data:
+            if self.string_session:
+                ok, _ = self.auto_pull_token()
+                return ok
+            return False
+        # تحديث وسحب التوكن تلقائياً كل ساعة (3600 ثانية)
+        if self.string_session and (time.time() - self.last_token_time > 3600):
             ok, _ = self.auto_pull_token()
             return ok
         return True
 
     def send_req(self, action: str, extra: dict = None):
+        if not self.init_data:
+            return None
         url = f"{BASE_URL}?action={action}&t={int(time.time() * 1000)}"
         payload = {
             "initData": self.init_data,
@@ -215,7 +222,7 @@ class AccountWorker:
                     self.session.headers["x-atf-tma-session"] = res["tma_session_token"]
                 return res
         except Exception as e:
-            logging.error(f"خطأ طلب {action}: {e}")
+            logging.error(f"User {self.chat_id} - Req Error {action}: {e}")
         return None
 
     def claim_mining_reward(self):
@@ -306,28 +313,29 @@ class AccountWorker:
 
     def get_text(self):
         state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
-        session_state = "جلسة مخصصة ✅" if self.has_custom_session else "الجلسة الأساسية ✅"
+        session_state = "مربوطة ✅" if self.string_session else "غير مربوطة ❌"
+        token_state = "متوفر ومفعل ✅" if self.init_data else "بانتظار التفعيل ❌"
+        
         progress = min(100, int((self.pending_reward / 1.0) * 100))
         bars = int(10 * (progress / 100))
         bar = "█" * bars + "░" * (10 - bars)
 
         return (
-            f"<b>🤖 لوحة تحكم مائنر ATF التلقائية</b>\n\n"
+            f"<b>🤖 لوحة تحكم مائنر ATF الخاصة بك</b>\n\n"
             f"• <b>الحالة:</b> {state}\n"
-            f"• <b>اتصال الجلسة:</b> <code>{session_state}</code>\n"
-            f"• <b>البوت المستهدف:</b> <code>@{self.target_bot}</code>\n"
+            f"• <b>الجلسة النصية:</b> <code>{session_state}</code>\n"
+            f"• <b>التوكن:</b> <code>{token_state}</code>\n"
             f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
             f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"<b>💰 تعدين العملات (هدف 1 ATF):</b>\n"
             f"• <b>التقدم:</b> <code>[{bar}] {progress}%</code>\n"
             f"• <b>المعلق:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n\n"
-            f"<b>👥 محفظة الأصدقاء (تلقائي عند ≥ 0.9):</b>\n"
+            f"<b>👥 محفظة الأصدقاء:</b>\n"
             f"• <b>الرصيد المعلق:</b> <code>{self.team_wallet_balance:.4f} ATF</code>\n"
-            f"• <b>مرات جمع الفريق:</b> <code>{self.total_team_claims}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>المهام المنجزة:</b> <code>{self.completed_tasks}</code>\n"
-            f"• <b>مرات جمع التعدين:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
+            f"• <b>مرات الجمع:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
             f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
         )
 
@@ -336,14 +344,13 @@ class AccountWorker:
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
         btn_claim = types.InlineKeyboardButton("💰 جمع التعدين", callback_data="claim")
         btn_session = types.InlineKeyboardButton("📱 ربط جلستي النصية", callback_data="ask_session")
+        btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         btn_bot = types.InlineKeyboardButton("🎯 تغيير يوزر البوت", callback_data="ask_bot_user")
         btn_pull = types.InlineKeyboardButton("🔄 تحديث التوكن", callback_data="pull_now")
-        btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         
         markup.add(btn_toggle, btn_claim)
-        markup.add(btn_session)
+        markup.add(btn_session, btn_manual)
         markup.add(btn_bot, btn_pull)
-        markup.add(btn_manual)
         return markup
 
     def update_ui(self):
@@ -372,7 +379,6 @@ class AccountWorker:
                     u = login.get("user", {})
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
-                    
                     team_bal = u.get("team_wallet", u.get("referral_balance", u.get("team_balance", None)))
                     if team_bal is not None:
                         self.team_wallet_balance = float(team_bal)
@@ -396,7 +402,7 @@ class AccountWorker:
                 cycle += 1
                 self.stop_event.wait(cycle_sec)
             except Exception as e:
-                logging.error(f"خطأ دورة التعدين: {e}")
+                logging.error(f"User {self.chat_id} Loop error: {e}")
                 self.stop_event.wait(5.0)
 
     def start(self, message_id=None):
@@ -415,7 +421,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام ومعالجة الأحداث
+# 4. أوامر التيليجرام ومعالجة كل مستخدم على حدة
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -433,9 +439,9 @@ def cmd_start(message):
 def async_pull_target_bot(cid, w):
     success, msg = w.auto_pull_token()
     if success:
-        bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين!</b>")
+        bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين لحسابك!</b>")
     else:
-        bot.send_message(cid, f"❌ <b>فشل السحب:</b>\n<code>{msg}</code>\n\n💡 <i>يمكنك استخدام زر '🔑 إدخال توكن يدوي' كبديل مباشر.</i>")
+        bot.send_message(cid, f"❌ <b>فشل السحب:</b>\n<code>{msg}</code>\n\n💡 <i>يمكنك استخدام زر '🔑 إدخال توكن يدوي' كبديل مباشر وسريع.</i>")
     w.update_ui()
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -455,17 +461,17 @@ def on_click(call):
         bot.answer_callback_query(call.id, "تم الإيقاف 🛑")
     elif call.data == "claim":
         w.claim_mining_reward()
-        bot.answer_callback_query(call.id, "تم جمع التعدين ✅")
+        bot.answer_callback_query(call.id, "تم طلب الجمع ✅")
     elif call.data == "ask_session":
         waiting_custom_session.add(cid)
-        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>\n(الذي قمت باستخراجه من Pydroid 3)")
+        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>")
         bot.answer_callback_query(call.id, "بانتظار كود الجلسة...")
     elif call.data == "pull_now":
         bot.answer_callback_query(call.id, "جاري التحديث...")
         threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
     elif call.data == "ask_bot_user":
         waiting_target_bot.add(cid)
-        bot.send_message(cid, "🎯 <b>أرسل الآن يوزرنيم البوت الذي تريد سحب التوكن منه:</b>\n(مثال: <code>@ATF_AIRDROP_bot</code>)")
+        bot.send_message(cid, "🎯 <b>أرسل الآن يوزرنيم البوت:</b>\n(الافتراضي: <code>@ATF_AIRDROP_bot</code>)")
         bot.answer_callback_query(call.id, "بانتظار اليوزرنيم...")
     elif call.data == "manual_token":
         waiting_manual_token.add(cid)
@@ -478,20 +484,21 @@ def on_click(call):
 def handle_all_messages(message):
     cid = message.chat.id
     text = message.text.strip()
-    w = active_workers.get(cid)
-    if not w:
-        w = AccountWorker(chat_id=cid)
-        active_workers[cid] = w
+    
+    if cid not in active_workers:
+        active_workers[cid] = AccountWorker(chat_id=cid)
+    w = active_workers[cid]
 
+    # استقبال كود الجلسة النصية الخاص بهذا المستخدم
     if cid in waiting_custom_session:
         waiting_custom_session.remove(cid)
         clean_session = "".join(text.split())
         w.string_session = clean_session
-        w.has_custom_session = True
-        bot.send_message(cid, "⏳ <b>تم استلام الجلسة، جاري الاتصال وسحب التوكن من البوت...</b>")
+        bot.send_message(cid, "⏳ <b>تم استلام جلستك الخاصة، جاري الاتصال وسحب التوكن من البوت...</b>")
         threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
         return
 
+    # استقبال يوزر البوت
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
@@ -499,6 +506,7 @@ def handle_all_messages(message):
         threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
         return
 
+    # استقبال التوكن اليدوي
     if cid in waiting_manual_token:
         waiting_manual_token.remove(cid)
         raw_text = text
@@ -510,10 +518,10 @@ def handle_all_messages(message):
             return
 
         w.update_headers(raw_text)
-        w.last_status = "⚡ تم تعيين التوكن وبدأ التعدين"
+        w.last_status = "⚡ تم تعيين توكن حسابك وبدأ التعدين"
         w.last_token_time = time.time()
         w.update_ui()
-        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح وبدأ التعدين!")
+        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح وبدأ تعدين حسابك الخاص!")
         return
 
 if __name__ == "__main__":
