@@ -39,11 +39,12 @@ API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAEfz_afsdXwpoiwHcoleaDExt_DT3arO5U")
 
+# كود الجلسة الجديد الخاص بك
 DEFAULT_STRING_SESSION = (
-    "1BJWap1sBuz1G6LoOdUGV3VkFr5nlFxy13R3W1CQh3ELRdIGfzw6nxQ404KeOlJ7r6yhM2OnUwXnSTR7swVF3YSvKipeRuz4382qlLaqlY0"
-    "NUb3sCE_Peiso5RfJpe9gqmH6mEYTKBoIB_GUj-JIyvOt6ul9Lb96PrAn1oZ0FVCa9XwhCF3nFT8JNDmwbLWPp6KPOU8uhIGb7pU4o9llarR-"
-    "LHz02bj2kcRbWhpxWTfZ15tgFtJVvuD4smCZdJ5J_wSrRpUm56HrEC1HAwnyNfZacu5Mi1OAQcijkbw-Toij6eUXp_zBBY6xcS5A1q2S81raty"
-    "q026ByiAoOiumRo3QDgZlkXFUM="
+    "1BJWap1sBu3EjezzkBKKUZ8gWHAVIGQVRUIfM60v5KOZWajnGi5ppal6MwrZZjXghbg8HW1gVKCAB-gC_1p-Hx8jv6eCxhqlS1gXiGGu6efOkr_"
+    "pA2mlfth1GHD-3vOvyC6LjZFwl-io9T7GNlSw98TTMWIpzHGDry8cklbBvP4zRBvIVMnBvwyulEDlfLE3ZPozRg83EouMTqFHlA5ksHUEd1mp_"
+    "R2EPC_MWHpZCI3dAqPUgAWY_28la3b65TW0bgDyippSoBaL2tYBZ05SSKvIMICkoTffIAy68MaoSIRYjzbVj4yLXjbkzjfuzncAjW6FU6g6Qzo"
+    "KSDetowlFRqKNvPs3ofzg="
 )
 
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
@@ -78,7 +79,7 @@ waiting_target_bot = set()
 waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 2. سحب التوكن عبر Telethon مع معالجة الأخطاء
+# 2. سحب التوكن عبر Telethon
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
@@ -142,7 +143,7 @@ class AccountWorker:
 
         self.pool_balance = 0.0
         self.pending_reward = 0.0
-        self.team_wallet_balance = 0.0  # رصيد نقاط الأصدقاء المعلق
+        self.team_wallet_balance = 0.0
         self.miner_level = 0
         self.total_claims = 0
         self.total_team_claims = 0
@@ -189,7 +190,8 @@ class AccountWorker:
             return False, msg
 
     def refresh_token_if_needed(self):
-        if not self.init_data or (time.time() - self.last_token_time > 7200):
+        # سحب وتجديد التوكن تلقائياً كل ساعة (3600 ثانية)
+        if not self.init_data or (time.time() - self.last_token_time > 3600):
             ok, _ = self.auto_pull_token()
             return ok
         return True
@@ -228,7 +230,6 @@ class AccountWorker:
         return False
 
     def claim_team_wallet(self):
-        """جمع نقاط محفظة الأصدقاء / الفريق"""
         res = self.send_req("claim_team_wallet")
         if res and res.get("status") == "success":
             self.total_team_claims += 1
@@ -311,7 +312,7 @@ class AccountWorker:
         return (
             f"<b>🤖 لوحة تحكم مائنر ATF التلقائية</b>\n\n"
             f"• <b>الحالة:</b> {state}\n"
-            f"• <b>اتصال الجلسة:</b> <code>نشط وتلقائي ✅</code>\n"
+            f"• <b>اتصال الجلسة:</b> <code>نشط وتلقائي كل ساعة ✅</code>\n"
             f"• <b>البوت المستهدف:</b> <code>@{self.target_bot}</code>\n"
             f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
             f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
@@ -369,7 +370,6 @@ class AccountWorker:
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
                     
-                    # استخراج رصيد محفظة الأصدقاء من بيانات الحساب
                     team_bal = u.get("team_wallet", u.get("referral_balance", u.get("team_balance", None)))
                     if team_bal is not None:
                         self.team_wallet_balance = float(team_bal)
@@ -380,11 +380,9 @@ class AccountWorker:
 
                 cycle_sec = self.boost()
 
-                # فحص جمع التعدين الأساسي
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
 
-                # فحص محفظة الأصدقاء والجمع عند الوصول لـ 0.9 أو أكثر
                 if self.team_wallet_balance >= 0.9:
                     self.claim_team_wallet()
 
