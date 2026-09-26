@@ -24,7 +24,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Engine Multi-User Isolated Running 24/7!"
+    return "ATF Engine High-Speed Isolated Running 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -66,14 +66,13 @@ def start_telethon_loop(loop):
 
 threading.Thread(target=start_telethon_loop, args=(telethon_loop,), daemon=True).start()
 
-# تخزين كل مستخدم بشكل منفصل تماماً
 active_workers = {}
 waiting_target_bot = set()
 waiting_manual_token = set()
 waiting_custom_session = set()
 
 # ----------------------------------------------------
-# 2. سحب التوكن عبر Telethon لكل جلسة مستقلة
+# 2. سحب التوكن عبر Telethon
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
@@ -124,12 +123,12 @@ class TelethonManager:
             return None, f"توقف السحب (Timeout): {str(e)}"
 
 # ----------------------------------------------------
-# 3. عامل التعدين المستقل لكل مستخدم
+# 3. عامل التعدين المستقل لكل مستخدم (معدل للسرعة القصوى)
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id):
         self.chat_id = chat_id
-        self.string_session = None  # فارغ تماماً - كل شخص يضع جلسته بنفسه
+        self.string_session = None
         self.init_data = None
         self.tg_id = str(chat_id)
         self.device_id = f"dev-{uuid.uuid4()}"
@@ -196,7 +195,6 @@ class AccountWorker:
                 ok, _ = self.auto_pull_token()
                 return ok
             return False
-        # تحديث وسحب التوكن تلقائياً كل ساعة (3600 ثانية)
         if self.string_session and (time.time() - self.last_token_time > 3600):
             ok, _ = self.auto_pull_token()
             return ok
@@ -215,7 +213,7 @@ class AccountWorker:
         if extra:
             payload.update(extra)
         try:
-            r = self.session.post(url, json=payload, timeout=12)
+            r = self.session.post(url, json=payload, timeout=8)
             if r.status_code == 200:
                 res = r.json()
                 if "tma_session_token" in res:
@@ -267,7 +265,8 @@ class AccountWorker:
 
             self.pending_reward = new_pending
             self.last_status = f"⚡ تسريع نشط (#{self.total_boosts})"
-        return 5.0
+        # تم تخفيض وقت الانتظار لزيادة سرعة التكرار للضعف
+        return 2.5
 
     def process_tasks(self):
         now = int(time.time())
@@ -288,17 +287,17 @@ class AccountWorker:
                 self.task_cooldowns[task] = int(c.get("next_available", now + 7200))
                 self.last_status = f"🎁 تم جمع مهمة: {task}"
                 self.update_ui()
-                self.stop_event.wait(2.0)
+                self.stop_event.wait(1.0)
                 continue
 
             started_at = int(time.time())
             s = self.send_req("start_task", {"task_id": task, "client_started_at": started_at})
             if s and s.get("status") == "success":
                 self.task_start_times[task] = started_at
-                dur = int(s.get("task_duration", 15))
+                dur = min(int(s.get("task_duration", 10)), 12)
                 self.last_status = f"⏳ جاري تنفيذ: {task}"
                 self.update_ui()
-                self.stop_event.wait(dur + 2)
+                self.stop_event.wait(dur + 1)
 
                 claim_res = self.send_req("claim_task", {"task_id": task, "client_started_at": started_at})
                 if claim_res and claim_res.get("status") == "success":
@@ -309,7 +308,7 @@ class AccountWorker:
                     self.last_status = f"🎁 تم جمع مهمة: {task}"
                     self.update_ui()
 
-            self.stop_event.wait(2.0)
+            self.stop_event.wait(1.0)
 
     def get_text(self):
         state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
@@ -374,18 +373,20 @@ class AccountWorker:
                     self.stop_event.wait(10.0)
                     continue
 
-                login = self.send_req("login")
-                if login and login.get("status") == "success":
-                    u = login.get("user", {})
-                    self.pool_balance = float(u.get("mined_balance", self.pool_balance))
-                    self.miner_level = int(u.get("miner_level", self.miner_level))
-                    team_bal = u.get("team_wallet", u.get("referral_balance", u.get("team_balance", None)))
-                    if team_bal is not None:
-                        self.team_wallet_balance = float(team_bal)
+                # تسجيل الدخول وتحديث البيانات كل 50 تسريع فقط لعدم إبطاء الدورة
+                if cycle % 50 == 0:
+                    login = self.send_req("login")
+                    if login and login.get("status") == "success":
+                        u = login.get("user", {})
+                        self.pool_balance = float(u.get("mined_balance", self.pool_balance))
+                        self.miner_level = int(u.get("miner_level", self.miner_level))
+                        team_bal = u.get("team_wallet", u.get("referral_balance", u.get("team_balance", None)))
+                        if team_bal is not None:
+                            self.team_wallet_balance = float(team_bal)
 
-                    server_cooldowns = login.get("task_cooldowns", {})
-                    if server_cooldowns:
-                        self.task_cooldowns.update(server_cooldowns)
+                        server_cooldowns = login.get("task_cooldowns", {})
+                        if server_cooldowns:
+                            self.task_cooldowns.update(server_cooldowns)
 
                 cycle_sec = self.boost()
 
@@ -395,15 +396,19 @@ class AccountWorker:
                 if self.team_wallet_balance >= 0.9:
                     self.claim_team_wallet()
 
-                if cycle % 6 == 0:
+                # فحص المهام كل 60 دورة تسريع حتى لا يقطع سلسلة السرعة
+                if cycle % 60 == 0 and cycle != 0:
                     self.process_tasks()
 
-                self.update_ui()
+                # تحديث الواجهة كل 3 تسريعات لتوفير ترافيك التيليجرام
+                if cycle % 3 == 0:
+                    self.update_ui()
+
                 cycle += 1
                 self.stop_event.wait(cycle_sec)
             except Exception as e:
                 logging.error(f"User {self.chat_id} Loop error: {e}")
-                self.stop_event.wait(5.0)
+                self.stop_event.wait(3.0)
 
     def start(self, message_id=None):
         if message_id:
@@ -421,7 +426,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام ومعالجة كل مستخدم على حدة
+# 4. أوامر التيليجرام
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -439,7 +444,7 @@ def cmd_start(message):
 def async_pull_target_bot(cid, w):
     success, msg = w.auto_pull_token()
     if success:
-        bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين لحسابك!</b>")
+        bot.send_message(cid, f"✅ <b>تم سحب التوكن بنجاح من @{w.target_bot} وبدأ التعدين السريع لحسابك!</b>")
     else:
         bot.send_message(cid, f"❌ <b>فشل السحب:</b>\n<code>{msg}</code>\n\n💡 <i>يمكنك استخدام زر '🔑 إدخال توكن يدوي' كبديل مباشر وسريع.</i>")
     w.update_ui()
@@ -489,7 +494,6 @@ def handle_all_messages(message):
         active_workers[cid] = AccountWorker(chat_id=cid)
     w = active_workers[cid]
 
-    # استقبال كود الجلسة النصية الخاص بهذا المستخدم
     if cid in waiting_custom_session:
         waiting_custom_session.remove(cid)
         clean_session = "".join(text.split())
@@ -498,7 +502,6 @@ def handle_all_messages(message):
         threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
         return
 
-    # استقبال يوزر البوت
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
@@ -506,7 +509,6 @@ def handle_all_messages(message):
         threading.Thread(target=async_pull_target_bot, args=(cid, w), daemon=True).start()
         return
 
-    # استقبال التوكن اليدوي
     if cid in waiting_manual_token:
         waiting_manual_token.remove(cid)
         raw_text = text
@@ -518,10 +520,10 @@ def handle_all_messages(message):
             return
 
         w.update_headers(raw_text)
-        w.last_status = "⚡ تم تعيين توكن حسابك وبدأ التعدين"
+        w.last_status = "⚡ تم تعيين توكن حسابك وبدأ التعدين السريع"
         w.last_token_time = time.time()
         w.update_ui()
-        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح وبدأ تعدين حسابك الخاص!")
+        bot.send_message(cid, "✅ تم تعيين التوكن بنجاح وبدأ تعدين حسابك الخاص بأقصى سرعة!")
         return
 
 if __name__ == "__main__":
